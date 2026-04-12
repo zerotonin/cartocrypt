@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cartocrypt"
+dynamic = ["version"]
+description = "Topology-preserving cryptographic anonymisation of cartographic datasets."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Bart Geurten", email = "bart.geurten@otago.ac.nz"},
+]
+keywords = [
+    "cartography",
+    "cryptography",
+    "geoprivacy",
+    "topology-preserving",
+    "anonymisation",
+    "GIS",
+    "OpenStreetMap",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "networkx>=3.1",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "osmnx>=1.7",
+    "numpy>=1.25",
+    "scipy>=1.11",
+    "cryptography>=41.0",
+    "matplotlib>=3.7",
+    "fiona>=1.9",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.5",
+    "sphinx>=7.2",
+    "sphinx-rtd-theme>=1.3",
+    "sphinx-click>=5.0",
+]
+docs = [
+    "sphinx>=7.2",
+    "sphinx-rtd-theme>=1.3",
+    "sphinx-click>=5.0",
+    "sphinx-autodoc-typehints>=1.24",
+]
+
+[project.scripts]
+cartocrypt = "cartocrypt.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zerotonin/cartocrypt"
+Documentation = "https://zerotonin.github.io/cartocrypt"
+Repository = "https://github.com/zerotonin/cartocrypt"
+Issues = "https://github.com/zerotonin/cartocrypt/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+write_to = "src/cartocrypt/_version.py"
+fallback_version = "0.1.0.dev0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=cartocrypt --cov-report=term-missing"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP"]
+ignore = ["D100", "D104"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
