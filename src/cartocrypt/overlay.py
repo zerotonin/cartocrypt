@@ -43,7 +43,6 @@ from scipy.spatial import cKDTree
 
 from cartocrypt.constants import Coords
 
-
 # ═════════════════════════════════════════════════════════════════
 #  Public API
 # ═════════════════════════════════════════════════════════════════
@@ -80,7 +79,7 @@ def add_layer(
         FileNotFoundError: If a file path does not exist.
     """
     # ── Check for duplicate layer name ─────────────────────────
-    existing = {l["name"] for l in g.graph.get("_overlay_meta", [])}
+    existing = {lyr["name"] for lyr in g.graph.get("_overlay_meta", [])}
     if name in existing:
         msg = f"Layer name '{name}' already exists on this graph."
         raise ValueError(msg)

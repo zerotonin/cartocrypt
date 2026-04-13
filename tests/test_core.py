@@ -5,23 +5,22 @@
 
 from __future__ import annotations
 
-import numpy as np
 import networkx as nx
+import numpy as np
 import pytest
 
+from cartocrypt.canon import (
+    attribute_hash,
+    canonical_node_order,
+    weisfeiler_lehman_hash,
+)
 from cartocrypt.keygen import (
+    compute_checksum,
     generate_key,
     prf_coordinates,
     prf_coordinates_batch,
-    compute_checksum,
     verify_checksum,
 )
-from cartocrypt.canon import (
-    weisfeiler_lehman_hash,
-    canonical_node_order,
-    attribute_hash,
-)
-
 
 # ─────────────────────────────────────────────────────────────────
 #  Fixtures

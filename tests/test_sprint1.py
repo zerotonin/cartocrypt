@@ -15,17 +15,12 @@ Acceptance criteria:
 
 from __future__ import annotations
 
-import json
-import tempfile
-from pathlib import Path
-
 import networkx as nx
 import numpy as np
 import pytest
 
-from tests.aegina_fixture import make_aegina_graph, _haversine
-from cartocrypt.ingest import to_labelled_graph, graph_summary
-
+from cartocrypt.ingest import graph_summary, to_labelled_graph
+from tests.aegina_fixture import _haversine, make_aegina_graph
 
 # ─────────────────────────────────────────────────────────────────
 #  Fixtures

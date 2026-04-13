@@ -13,7 +13,6 @@ import tempfile
 from pathlib import Path
 
 import geopandas as gpd
-import networkx as nx
 import numpy as np
 import pytest
 from shapely.geometry import LineString, Point, Polygon
@@ -27,7 +26,6 @@ from cartocrypt.overlay import (
     summarise,
 )
 from tests.aegina_fixture import make_aegina_graph
-
 
 # ─────────────────────────────────────────────────────────────────
 #  Fixtures
@@ -311,7 +309,7 @@ class TestMultiLayer:
         add_layer(g, coords, habitats, "habitat")
         layers = get_layers(g)
         assert len(layers) == 3
-        names = {l["name"] for l in layers}
+        names = {lyr["name"] for lyr in layers}
         assert names == {"weta", "power", "habitat"}
 
 

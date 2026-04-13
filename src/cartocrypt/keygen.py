@@ -20,7 +20,6 @@ from pathlib import Path
 import numpy as np
 
 from cartocrypt.constants import (
-    HMAC_ALGORITHM,
     KEY_LENGTH_BYTES,
     Coords,
     KeyBytes,
@@ -136,7 +135,7 @@ def compute_checksum(
     Returns:
         Hex digest checksum string.
     """
-    payload = f"{graph_hash}|{attribute_hash}".encode("utf-8")
+    payload = f"{graph_hash}|{attribute_hash}".encode()
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 

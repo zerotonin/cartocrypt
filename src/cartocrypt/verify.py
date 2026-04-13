@@ -10,9 +10,8 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
-from cartocrypt.canon import attribute_hash, weisfeiler_lehman_hash
-from cartocrypt.constants import Coords, KeyBytes
-from cartocrypt.keygen import verify_checksum
+from cartocrypt.canon import weisfeiler_lehman_hash
+from cartocrypt.constants import Coords
 
 
 def verify_round_trip(

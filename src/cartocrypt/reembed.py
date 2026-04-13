@@ -40,7 +40,6 @@ from scipy.sparse.linalg import spsolve
 from cartocrypt.constants import (
     STRESS_FTOL,
     STRESS_MAX_ITER,
-    TUTTE_MAX_ITER,
     Coords,
 )
 

@@ -15,7 +15,7 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 
-from cartocrypt.constants import Coords, DEFAULT_CRS
+from cartocrypt.constants import DEFAULT_CRS, Coords
 
 
 def from_osm(
@@ -110,8 +110,6 @@ def graph_summary(
     Returns:
         Multi-line summary string.
     """
-    nodes = list(g.nodes)
-    node_idx = {nd: i for i, nd in enumerate(nodes)}
     lengths = []
     for u, v, data in g.edges(data=True):
         lengths.append(data.get("length", 0.0))

@@ -5,13 +5,13 @@ channels:
 dependencies:
   - python=3.11
   - networkx>=3.1
-  - geopandas>=0.14
+  - geopandas>=1.0
   - shapely>=2.0
   - osmnx>=1.7
   - numpy>=1.25
   - scipy>=1.11
   - matplotlib>=3.7
-  - fiona>=1.9
+  - pyogrio>=0.7
   - click>=8.1
   - pip
   - pip:
