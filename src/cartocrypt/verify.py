@@ -11,7 +11,8 @@ import networkx as nx
 import numpy as np
 
 from cartocrypt.canon import weisfeiler_lehman_hash
-from cartocrypt.constants import Coords
+from cartocrypt.constants import AREA_RTOL, Coords
+from cartocrypt.faces import extract_faces, face_area_residuals
 
 
 def verify_round_trip(
@@ -84,7 +85,7 @@ def verify_metrics(
     anon_coords: Coords,
     *,
     length_rtol: float = 0.01,
-    area_rtol: float = 0.05,
+    area_rtol: float = AREA_RTOL,
 ) -> dict[str, Any]:
     """Verify that metric invariants (lengths, areas) are preserved.
 
@@ -93,10 +94,16 @@ def verify_metrics(
         original_coords: (N, 2) original positions.
         anon_coords: (N, 2) anonymised positions.
         length_rtol: Relative tolerance for edge lengths.
-        area_rtol: Relative tolerance for face areas.
+        area_rtol: Relative tolerance for face-area medians.
 
     Returns:
-        Dictionary with metric comparison statistics.
+        Dictionary of metric comparison statistics.  Keys:
+
+        * ``n_edges``, ``length_mean_rel_error``,
+          ``length_max_rel_error``, ``length_within_tol``.
+        * ``n_faces``, ``area_median_rel_error``,
+          ``area_max_rel_error``, ``area_p95_rel_error``,
+          ``area_within_tol`` — populated when the graph is planar.
     """
     nodes = list(g.nodes)
     node_idx = {nd: i for i, nd in enumerate(nodes)}
@@ -110,9 +117,32 @@ def verify_metrics(
         if l_orig > 1e-12:
             length_errors.append(abs(l_anon - l_orig) / l_orig)
 
-    return {
+    out: dict[str, Any] = {
         "n_edges": len(length_errors),
         "length_mean_rel_error": float(np.mean(length_errors)) if length_errors else 0.0,
         "length_max_rel_error": float(np.max(length_errors)) if length_errors else 0.0,
         "length_within_tol": all(e <= length_rtol for e in length_errors),
     }
+
+    # Face-area comparison — planar graphs only
+    try:
+        faces = extract_faces(g, original_coords)
+    except ValueError:
+        out.update({
+            "n_faces": 0,
+            "area_median_rel_error": 0.0,
+            "area_max_rel_error": 0.0,
+            "area_p95_rel_error": 0.0,
+            "area_within_tol": True,
+        })
+        return out
+
+    stats = face_area_residuals(original_coords, anon_coords, faces)
+    out.update({
+        "n_faces":               stats["n_faces"],
+        "area_median_rel_error": stats["median_rel"],
+        "area_max_rel_error":    stats["max_rel"],
+        "area_p95_rel_error":    stats["p95_rel"],
+        "area_within_tol":       stats["median_rel"] <= area_rtol,
+    })
+    return out
