@@ -51,6 +51,14 @@ TUTTE_MAX_ITER: int = 5000
 STRESS_FTOL: float = 1e-10
 STRESS_MAX_ITER: int = 10000
 
+# Joint stress+area objective: α balances the two soft constraints.
+# α = 1.0 puts face-area and edge-length residuals on equal footing
+# under the inverse-square weighting convention.
+AREA_WEIGHT: float = 10.0
+# Post-reembed sanity check: median relative face-area error above
+# this value triggers a warning (not an exception) via verify.py.
+AREA_RTOL: float = 0.05
+
 # ─────────────────────────────────────────────────────────────────
 #  Figure output
 # ─────────────────────────────────────────────────────────────────
