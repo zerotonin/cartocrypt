@@ -57,3 +57,29 @@ STRESS_MAX_ITER: int = 10000
 FIGURE_DPI: int = 300
 SVG_FONTTYPE: str = "none"  # editable text in SVG
 DEFAULT_FIG_SIZE: tuple[float, float] = (10.0, 8.0)
+
+# ─────────────────────────────────────────────────────────────────
+#  Aegina demo test case
+# ─────────────────────────────────────────────────────────────────
+# (north, south, east, west) — tight bbox around Aegina island
+AEGINA_BBOX: tuple[float, float, float, float] = (37.78, 37.67, 23.58, 23.40)
+
+OPENTOPO_API_URL: str = "https://portal.opentopography.org/API/globaldem"
+OPENTOPO_DEMTYPE: str = "COP30"  # Copernicus GLO-30, 30 m resolution
+
+# Semantic colours for the three Pokémon habitats — extension of
+# the Wong palette, chosen so the three species remain distinct
+# under the common forms of colour-vision deficiency.
+POKEMON_COLOURS: dict[str, str] = {
+    "Charizard": COLOURS["vermilion"],      # mountain fire
+    "Pikachu":   COLOURS["yellow"],         # coastal sparks
+    "Eevee":     COLOURS["bluish_green"],   # hidden valleys
+}
+
+# Futurama tube-metro line colours (Wong palette subset)
+FUTURAMA_LINE_COLOURS: list[str] = [
+    COLOURS["reddish_purple"],
+    COLOURS["blue"],
+    COLOURS["sky_blue"],
+    COLOURS["orange"],
+]
