@@ -10,6 +10,7 @@ CartoCrypt Documentation
    installation
    quickstart
    theory
+   threat_model
    api
    cli
    changelog
