@@ -14,3 +14,5 @@ coverage.xml
 docs/_build/
 *.key
 src/cartocrypt/_version.py
+.claude/*examples/output/
+examples/output/
