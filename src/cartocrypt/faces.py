@@ -98,7 +98,7 @@ def extract_faces(
     return faces
 
 
-def _pack_faces(
+def pack_faces(
     faces: list[list[int]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Pack a ragged face list into a dense index array + mask.
@@ -135,6 +135,57 @@ def _pack_faces(
 
 
 # ┌────────────────────────────────────────────────────────────┐
+# │ Face adjacency  « shared-boundary graph for splicing »      │
+# └────────────────────────────────────────────────────────────┘
+
+
+def face_adjacency_graph(
+    faces: list[list[int]],
+) -> nx.Graph:
+    """Return the face-adjacency graph of a planar embedding.
+
+    Two faces are adjacent iff they share at least one undirected
+    boundary edge.  The returned graph has one node per face
+    (labelled by its index in ``faces``) and one edge per shared
+    boundary edge.
+
+    This is the pairing substrate for attribute splicing: connected
+    components of the face-adjacency graph are the clusters within
+    which payload permutation happens.
+
+    Args:
+        faces: Cyclic face definitions — typically output of
+            :func:`extract_faces`.
+
+    Returns:
+        Undirected NetworkX graph; nodes are ints ``0..F-1``.
+    """
+    fa = nx.Graph()
+    fa.add_nodes_from(range(len(faces)))
+
+    # Map each undirected edge to the faces that use it.
+    edge_to_faces: dict[tuple[int, int], list[int]] = {}
+    for fi, face in enumerate(faces):
+        n = len(face)
+        for k in range(n):
+            u, v = face[k], face[(k + 1) % n]
+            key = (u, v) if u < v else (v, u)
+            edge_to_faces.setdefault(key, []).append(fi)
+
+    for _edge, owners in edge_to_faces.items():
+        # A boundary edge between two planar faces sits in the
+        # cyclic order of both.  Interior-only edges (not possible
+        # in a well-formed planar embedding) would have > 2 owners;
+        # duplicates within a single owner list are ignored.
+        unique = list(dict.fromkeys(owners))
+        for i in range(len(unique)):
+            for j in range(i + 1, len(unique)):
+                fa.add_edge(unique[i], unique[j])
+
+    return fa
+
+
+# ┌────────────────────────────────────────────────────────────┐
 # │ Shoelace areas  « vectorised, analytic-gradient friendly »  │
 # └────────────────────────────────────────────────────────────┘
 
@@ -157,7 +208,7 @@ def face_areas_signed(
     """
     if not faces:
         return np.zeros(0, dtype=np.float64)
-    idx, _mask, _lengths = _pack_faces(faces)
+    idx, _mask, _lengths = pack_faces(faces)
     return _face_areas_signed_packed(coords, idx)
 
 
@@ -229,7 +280,7 @@ def area_gradient_contribution(
         target_areas: ``(F,)`` target unsigned areas ``A*_f``.
         weights: ``(F,)`` per-face weights ``w_f``.
         packed: Optional precomputed output of
-            :func:`_pack_faces`.  Pass this from a caller that
+            :func:`pack_faces`.  Pass this from a caller that
             evaluates the objective many times (e.g. L-BFGS-B) to
             avoid re-packing on every call.
 
@@ -239,7 +290,7 @@ def area_gradient_contribution(
     if not faces:
         return 0.0, np.zeros_like(coords, dtype=np.float64)
 
-    idx, _mask, _lengths = packed if packed is not None else _pack_faces(faces)
+    idx, _mask, _lengths = packed if packed is not None else pack_faces(faces)
     target_areas = np.asarray(target_areas, dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
 
