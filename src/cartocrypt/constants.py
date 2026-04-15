@@ -60,6 +60,44 @@ AREA_WEIGHT: float = 10.0
 AREA_RTOL: float = 0.05
 
 # ─────────────────────────────────────────────────────────────────
+#  Attribute splicing (chromosome-crossover mitigation)
+# ─────────────────────────────────────────────────────────────────
+# Faces below this area quantile are too small to carry meaningful
+# payload and are excluded from splicing to avoid absurd swaps.
+MIN_SPLICE_AREA_PCTILE: float = 0.05
+# Within a splice cluster, paired faces must have area ratio ≤ this
+# value.  Prevents a sliver from swapping payload with a landmass.
+SPLICE_SIZE_RATIO_MAX: float = 4.0
+
+# ─────────────────────────────────────────────────────────────────
+#  Gestalt resynthesis (spectral coastline + fBm DEM)
+# ─────────────────────────────────────────────────────────────────
+SYNTHESIS_N_BOUNDARY_SAMPLES: int = 512
+# The lowest k Fourier components of the coastline are preserved
+# exactly (amplitude + phase) so the phantom island still "reads"
+# as a blob of the right overall shape; higher frequencies get
+# fresh keyed phases.
+SYNTHESIS_PRESERVE_LOW_FREQ: int = 4
+# Fallback Hurst exponent when radial power-spectrum estimation is
+# too noisy (typical Mediterranean island terrain: ~0.7–0.8).
+SYNTHESIS_FBM_HURST_DEFAULT: float = 0.75
+
+# ── Universal-multifractal DEM parameters (Gagnon/Lovejoy) ───────
+# α: Lévy index of the generator.  α = 2 is the log-normal cascade
+# case, which is implementable with Gaussian noise.  α < 2 would
+# need a Lévy-stable sampler (future sprint); for now we ship α = 2
+# and document the upgrade path.
+SYNTHESIS_MF_ALPHA: float = 2.0
+# C₁: codimension of the mean.  Controls intermittency — sparseness
+# of the extreme events that give ridges their bite.  Gagnon et al.
+# (2006) report ~0.12 for global Earth topography.
+SYNTHESIS_MF_C1: float = 0.12
+# Default method for DEM resynthesis.  "multifractal" uses the
+# universal-multifractal cascade; "fbm" keeps the plain fractional
+# Brownian motion code path for comparison + backwards compat.
+SYNTHESIS_DEM_METHOD: str = "multifractal"
+
+# ─────────────────────────────────────────────────────────────────
 #  Figure output
 # ─────────────────────────────────────────────────────────────────
 FIGURE_DPI: int = 300
