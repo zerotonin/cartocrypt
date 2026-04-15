@@ -44,7 +44,7 @@ from cartocrypt.constants import (
     Coords,
 )
 from cartocrypt.faces import (
-    _pack_faces,
+    pack_faces,
     area_gradient_contribution,
     extract_faces,
     face_areas,
@@ -55,10 +55,11 @@ def tutte_embed(
     g: nx.Graph,
     outer_face: list[Any] | None = None,
     seed_coords: Coords | None = None,
+    outer_boundary: Coords | None = None,
 ) -> Coords:
     """Compute a Tutte (barycentric) embedding of a planar graph.
 
-    Fixes outer face vertices on a regular polygon and solves
+    Fixes outer face vertices on a chosen convex curve and solves
     the linear system for interior vertex positions.
 
     Args:
@@ -67,6 +68,13 @@ def tutte_embed(
             the longest face cycle is selected automatically.
         seed_coords: Optional (N, 2) array of initial positions
             used to determine outer face vertex placement.
+        outer_boundary: Optional closed curve as ``(M, 2)`` array
+            onto which the outer face vertices are pinned.  The
+            curve is resampled (uniform arclength) to match the
+            number of outer-face nodes.  When ``None``, the outer
+            face is placed on a unit circle (the classical Tutte
+            default).  Supplying this makes the interior naturally
+            lay out inside the provided boundary.
 
     Returns:
         (N, 2) array of vertex coordinates.
@@ -90,13 +98,20 @@ def tutte_embed(
     interior = [nd for nd in nodes if nd not in outer_set]
     n_outer = len(outer_face)
 
-    # ── Place outer face on regular polygon ────────────────────
+    # ── Place outer face on boundary or unit circle ────────────
     coords = np.zeros((n, 2), dtype=np.float64)
-    for k, nd in enumerate(outer_face):
-        angle = 2.0 * np.pi * k / n_outer
-        i = node_idx[nd]
-        coords[i, 0] = np.cos(angle)
-        coords[i, 1] = np.sin(angle)
+    if outer_boundary is not None:
+        boundary_pts = _resample_boundary(outer_boundary, n_outer)
+        for k, nd in enumerate(outer_face):
+            i = node_idx[nd]
+            coords[i, 0] = boundary_pts[k, 0]
+            coords[i, 1] = boundary_pts[k, 1]
+    else:
+        for k, nd in enumerate(outer_face):
+            angle = 2.0 * np.pi * k / n_outer
+            i = node_idx[nd]
+            coords[i, 0] = np.cos(angle)
+            coords[i, 1] = np.sin(angle)
 
     if not interior:
         return coords
@@ -146,6 +161,7 @@ def stress_majorise(
     faces: list[list[int]] | None = None,
     target_face_areas: np.ndarray | None = None,
     area_weight: float = AREA_WEIGHT,
+    fixed_nodes: list[int] | np.ndarray | None = None,
     ftol: float = STRESS_FTOL,
     max_iter: int = STRESS_MAX_ITER,
 ) -> Coords:
@@ -174,6 +190,10 @@ def stress_majorise(
         area_weight: α; trade-off between edge-length and
             face-area residuals.  Default
             :data:`cartocrypt.constants.AREA_WEIGHT`.
+        fixed_nodes: Indices of nodes whose positions must not
+            move during optimisation.  Used to pin outer-face
+            nodes onto a phantom coastline so they don't drift
+            off the boundary during stress relaxation.
         ftol: Function tolerance for convergence.
         max_iter: Maximum optimisation iterations.
 
@@ -212,7 +232,7 @@ def stress_majorise(
         face_weights = 1.0 / np.maximum(
             np.asarray(target_face_areas, dtype=np.float64), 1e-12,
         ) ** 2
-        face_pack = _pack_faces(faces)
+        face_pack = pack_faces(faces)
     else:
         face_weights = None
         face_pack = None
@@ -253,7 +273,17 @@ def stress_majorise(
                 packed=face_pack,
             )
             grad += area_weight * a_grad
+        if fixed_mask is not None:
+            grad[fixed_mask] = 0.0
         return grad.ravel()
+
+    # Freeze pinned nodes by zeroing their gradient components.
+    # L-BFGS-B then leaves them at their initial positions for
+    # the whole optimisation — cheap and exact.
+    fixed_mask = None
+    if fixed_nodes is not None and len(fixed_nodes) > 0:
+        fixed_mask = np.zeros(n, dtype=bool)
+        fixed_mask[np.asarray(fixed_nodes, dtype=np.int64)] = True
 
     result = minimize(
         objective,
@@ -263,7 +293,13 @@ def stress_majorise(
         options={"ftol": ftol, "maxiter": max_iter},
     )
 
-    return result.x.reshape(n, 2)
+    final = result.x.reshape(n, 2)
+    # Belt-and-braces: explicitly restore pinned coords even if the
+    # optimiser's final step nudged them (L-BFGS-B is gradient-based
+    # but its line search can overshoot).
+    if fixed_mask is not None:
+        final[fixed_mask] = initial_coords[fixed_mask]
+    return final
 
 
 def reembed(
@@ -273,6 +309,7 @@ def reembed(
     *,
     preserve_lengths: bool = True,
     preserve_areas: bool = True,
+    outer_boundary: Coords | None = None,
 ) -> Coords:
     """Full re-embedding pipeline: Tutte → stress → area correction.
 
@@ -282,19 +319,36 @@ def reembed(
         seed_coords: (N, 2) PRF-seeded initial positions.
         preserve_lengths: Whether to enforce edge-length matching.
         preserve_areas: Whether to enforce face-area matching.
+        outer_boundary: Optional closed curve to pin the outer face
+            onto (see :func:`tutte_embed`).  Supplying this skips
+            the bbox auto-rescale: the boundary already sets the
+            output frame.
 
     Returns:
         (N, 2) anonymised coordinates.
     """
     # Phase 1: Tutte embedding for crossing-free layout.
-    # Tutte places the outer face on a unit circle, which is fine
-    # topologically but leaves subsequent stress far from the
-    # target edge-length scale when targets are in degrees or any
-    # non-unit unit system.  Rescale isotropically to match the
-    # bbox of the original coords — preserves planarity and puts
-    # stress in the right order of magnitude on iteration 1.
-    coords = tutte_embed(g, seed_coords=seed_coords)
-    coords = _rescale_to_bbox(coords, original_coords)
+    # Tutte places the outer face on either the user-supplied
+    # boundary (for "re-embed onto this island" use cases) or a
+    # unit circle (classical Tutte).  When no boundary is given
+    # we isotropically rescale to the original bbox so subsequent
+    # stress works at a sensible unit scale.
+    coords = tutte_embed(g, seed_coords=seed_coords,
+                         outer_boundary=outer_boundary)
+    if outer_boundary is None:
+        coords = _rescale_to_bbox(coords, original_coords)
+
+    # ── Outer-face nodes pinned if a boundary was supplied ──────
+    # Without pinning, stress majorisation drags the outer nodes
+    # off the boundary and the phantom island loses its
+    # silhouette.  Pinning keeps the coastline exact and forces
+    # interior nodes to spread outward instead of collapsing.
+    fixed_nodes: list[int] | None = None
+    if outer_boundary is not None:
+        nodes_list = list(g.nodes)
+        node_idx = {nd: i for i, nd in enumerate(nodes_list)}
+        outer_face = _find_outer_face(g)
+        fixed_nodes = [node_idx[nd] for nd in outer_face]
 
     # ── Common precomputes for Phases 2–3 ──────────────────────
     target_lengths = (
@@ -313,7 +367,8 @@ def reembed(
     # Doing this first gives Phase 3 a near-optimal seed so the
     # area term can refine without wrecking length fidelity.
     if preserve_lengths:
-        coords = stress_majorise(g, target_lengths, coords)
+        coords = stress_majorise(g, target_lengths, coords,
+                                 fixed_nodes=fixed_nodes)
 
     # ── Phase 3: joint stress + area refinement ─────────────────
     # Seeded from the Phase-2 optimum, the joint objective's
@@ -328,6 +383,7 @@ def reembed(
             coords,
             faces=face_list,
             target_face_areas=target_areas,
+            fixed_nodes=fixed_nodes,
         )
 
     return coords
@@ -356,6 +412,111 @@ def _find_outer_face(g: nx.Graph) -> list[Any]:
         return max(cycles, key=len)
     except nx.NetworkXError:
         return list(g.nodes)[:3]
+
+
+def reembed_onto(
+    g: nx.Graph,
+    original_coords: Coords,
+    seed_coords: Coords,
+    outer_boundary: Coords,
+    *,
+    preserve_lengths: bool = True,
+    preserve_areas: bool = True,
+) -> Coords:
+    """Re-embed the graph with its outer face pinned to ``outer_boundary``.
+
+    Rescales ``original_coords`` isotropically into the bbox of
+    ``outer_boundary`` before deriving stress targets.  Without this
+    rescale, target edge lengths (in the source frame's units) are
+    in a different scale from the boundary (in the phantom frame's
+    units), and stress-majorisation either diverges or collapses
+    interior nodes toward the centroid — the classical Tutte
+    shrinking artefact that produces an "empty island, nodes on
+    the shoreline" figure.
+
+    After rescaling, target lengths / face areas live in the same
+    units as the phantom coastline, so stress can actually pull
+    interior nodes outward to fill the island.
+
+    Args:
+        g: Planar labelled graph.
+        original_coords: (N, 2) source coords.  Used for edge-length
+            and face-area *target ratios*; the absolute scale is
+            normalised to the outer boundary's bbox.
+        seed_coords: PRF-seeded initial positions (unused once
+            Tutte anchors to the boundary; kept for API parity).
+        outer_boundary: (M, 2) closed curve in the target frame.
+
+    Returns:
+        (N, 2) re-embedded coordinates inside ``outer_boundary``.
+    """
+    rescaled = _isotropic_rescale_to_bbox(original_coords, outer_boundary)
+    return reembed(
+        g, rescaled, seed_coords,
+        preserve_lengths=preserve_lengths,
+        preserve_areas=preserve_areas,
+        outer_boundary=outer_boundary,
+    )
+
+
+def _isotropic_rescale_to_bbox(
+    coords: Coords,
+    target_curve: Coords,
+) -> Coords:
+    """Fit ``coords`` into ``target_curve``'s bbox, preserving aspect.
+
+    Uses the smaller of the two axis scale factors so the rescaled
+    coords stay inside the target bbox without anisotropic stretching.
+    Centres the result on the target bbox centroid.
+    """
+    src_lo = coords.min(axis=0)
+    src_hi = coords.max(axis=0)
+    tgt_lo = target_curve.min(axis=0)
+    tgt_hi = target_curve.max(axis=0)
+    src_span = np.maximum(src_hi - src_lo, 1e-30)
+    tgt_span = np.maximum(tgt_hi - tgt_lo, 1e-30)
+    scale = float(np.min(tgt_span / src_span))
+    src_centre = 0.5 * (src_lo + src_hi)
+    tgt_centre = 0.5 * (tgt_lo + tgt_hi)
+    return (coords - src_centre) * scale + tgt_centre
+
+
+def _resample_boundary(
+    boundary: Coords,
+    n_out: int,
+) -> Coords:
+    """Resample a closed curve to exactly ``n_out`` points (uniform arclength).
+
+    If the input is not already closed (first != last), it is
+    closed by appending the first point.  Duplicate closing rows
+    are removed before the resample to avoid zero-length segments.
+
+    Args:
+        boundary: ``(M, 2)`` ordered curve coordinates.
+        n_out: Desired output length.
+
+    Returns:
+        ``(n_out, 2)`` resampled curve.  The first and last rows
+        are NOT duplicated — the caller should treat the output as
+        a cyclic sequence.
+    """
+    pts = np.asarray(boundary, dtype=np.float64)
+    # Drop a closing-duplicate row if present
+    if len(pts) >= 2 and np.allclose(pts[0], pts[-1]):
+        pts = pts[:-1]
+    if len(pts) < 2:
+        return np.repeat(pts[:1], n_out, axis=0)
+    # Close the loop for arclength computation
+    closed = np.vstack([pts, pts[:1]])
+    d = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(d)])
+    total = float(s[-1])
+    if total < 1e-30:
+        return np.repeat(pts[:1], n_out, axis=0)
+    targets = np.linspace(0.0, total, n_out, endpoint=False)
+    x = np.interp(targets, s, closed[:, 0])
+    y = np.interp(targets, s, closed[:, 1])
+    return np.column_stack([x, y])
 
 
 def _rescale_to_bbox(
