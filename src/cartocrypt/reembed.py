@@ -44,10 +44,10 @@ from cartocrypt.constants import (
     Coords,
 )
 from cartocrypt.faces import (
-    pack_faces,
     area_gradient_contribution,
     extract_faces,
     face_areas,
+    pack_faces,
 )
 
 
@@ -457,6 +457,162 @@ def reembed_onto(
         preserve_areas=preserve_areas,
         outer_boundary=outer_boundary,
     )
+
+
+def terrain_driven_placement(
+    g: nx.Graph,
+    real_coords: Coords,
+    real_dem: np.ndarray,
+    real_transform: tuple[float, float, float, float, float, float],
+    real_coastline: np.ndarray,
+    phantom_dem: np.ndarray,
+    phantom_transform: tuple[float, float, float, float, float, float],
+    phantom_coastline: np.ndarray,
+    key: bytes,
+    *,
+    n_candidates_factor: int = 3,
+) -> Coords:
+    """Place graph nodes on a phantom terrain by matching terrain roles.
+
+    For each node on the real island we compute a terrain-role
+    vector ``(elevation_pctile, slope_pctile, coast_dist_pctile)``.
+    On the phantom terrain we compute the same fields at a dense
+    grid of candidate positions.  Each real node is matched to the
+    nearest-in-role-space phantom candidate (greedy, deterministic
+    under the key); the result is a set of node positions where
+    *roads follow phantom valleys* by construction.
+
+    Args:
+        g: Planar graph with sequential int node labels.
+        real_coords: ``(N, 2)`` real-island coordinates.
+        real_dem / real_transform / real_coastline: source terrain.
+        phantom_dem / phantom_transform / phantom_coastline: target.
+        key: 32-byte symmetric key (breaks ties in the greedy
+            assignment; ensures determinism).
+        n_candidates_factor: how many candidate positions per node
+            to sample on the phantom terrain (denser = better
+            matching, slower).
+
+    Returns:
+        ``(N, 2)`` phantom-frame coordinates for every node in ``g``.
+    """
+    import hashlib
+    import hmac
+
+    from scipy.spatial import cKDTree
+
+    from cartocrypt.synthesis import (
+        compute_terrain_roles,
+        sample_terrain_role_at_coords,
+    )
+
+    n = g.number_of_nodes()
+
+    # ── Terrain roles on the real island ──────────────────────
+    real_roles_fields = compute_terrain_roles(
+        real_dem, real_coastline, real_transform,
+    )
+    node_roles = sample_terrain_role_at_coords(
+        real_coords, real_roles_fields, real_transform,
+    )  # (N, 3)
+
+    # ── Candidate positions on the phantom terrain ────────────
+    ph_roles_fields = compute_terrain_roles(
+        phantom_dem, phantom_coastline, phantom_transform,
+    )
+    # Dense grid inside the phantom coastline
+    from shapely.geometry import Point
+    from shapely.geometry import Polygon as ShapelyPolygon
+    coast_poly = ShapelyPolygon(phantom_coastline)
+    ph_a, _pb, ph_c, _pd, ph_e, ph_f = phantom_transform
+    ph_h, ph_w = phantom_dem.shape
+    step_r = max(1, ph_h // int(np.sqrt(n * n_candidates_factor)))
+    step_c = max(1, ph_w // int(np.sqrt(n * n_candidates_factor)))
+    cand_rows = np.arange(0, ph_h, step_r)
+    cand_cols = np.arange(0, ph_w, step_c)
+    cc, rr = np.meshgrid(cand_cols, cand_rows)
+    cand_x = ph_a * cc.ravel() + ph_c
+    cand_y = ph_e * rr.ravel() + ph_f
+    # Filter to inside coastline
+    inside_mask = np.array([
+        coast_poly.contains(Point(x, y))
+        for x, y in zip(cand_x, cand_y, strict=True)
+    ])
+    cand_x = cand_x[inside_mask]
+    cand_y = cand_y[inside_mask]
+    cand_coords = np.column_stack([cand_x, cand_y])
+    cand_roles = sample_terrain_role_at_coords(
+        cand_coords, ph_roles_fields, phantom_transform,
+    )  # (M, 3)
+
+    if len(cand_coords) < n:
+        # Not enough candidates — fall back to uniform random inside
+        rng_fb = np.random.default_rng(
+            int.from_bytes(
+                hmac.new(key, b"terrain-fallback", hashlib.sha256).digest()[:8],
+                "big",
+            ),
+        )
+        bbox = (
+            float(cand_x.min()) if len(cand_x) else float(phantom_coastline[:, 0].min()),
+            float(cand_x.max()) if len(cand_x) else float(phantom_coastline[:, 0].max()),
+            float(cand_y.min()) if len(cand_y) else float(phantom_coastline[:, 1].min()),
+            float(cand_y.max()) if len(cand_y) else float(phantom_coastline[:, 1].max()),
+        )
+        extra = np.column_stack([
+            rng_fb.uniform(bbox[0], bbox[1], size=n * 3),
+            rng_fb.uniform(bbox[2], bbox[3], size=n * 3),
+        ])
+        cand_coords = np.vstack([cand_coords, extra]) if len(cand_coords) else extra
+        cand_roles = sample_terrain_role_at_coords(
+            cand_coords, ph_roles_fields, phantom_transform,
+        )
+
+    # ── Greedy nearest-neighbour in role space ─────────────────
+    # Keyed shuffle of the node processing order so the assignment
+    # is deterministic but not biased by node-ID order.
+    rng = np.random.default_rng(
+        int.from_bytes(
+            hmac.new(key, b"terrain-placement", hashlib.sha256).digest()[:8],
+            "big",
+        ),
+    )
+    order = rng.permutation(n)
+    tree = cKDTree(cand_roles)
+    assigned = np.zeros(len(cand_coords), dtype=bool)
+    out = np.empty((n, 2), dtype=np.float64)
+
+    for node_i in order:
+        role_vec = node_roles[node_i]
+        # Find k nearest candidates, pick the closest that's unassigned
+        k = min(32, len(cand_coords))
+        dists, idxs = tree.query(role_vec, k=k)
+        if np.isscalar(idxs):
+            dists = [dists]
+            idxs = [idxs]
+        placed = False
+        for ci in idxs:
+            if not assigned[ci]:
+                out[node_i] = cand_coords[ci]
+                assigned[ci] = True
+                placed = True
+                break
+        if not placed:
+            # All k nearest are taken — find ANY unassigned
+            free = np.where(~assigned)[0]
+            if len(free) > 0:
+                best = free[
+                    np.argmin(
+                        np.linalg.norm(cand_roles[free] - role_vec, axis=1),
+                    )
+                ]
+                out[node_i] = cand_coords[best]
+                assigned[best] = True
+            else:
+                # Absolute fallback: jitter the centroid
+                out[node_i] = cand_coords.mean(axis=0) + rng.normal(scale=1e-4, size=2)
+
+    return out
 
 
 def _isotropic_rescale_to_bbox(
