@@ -204,6 +204,122 @@ def get_polygons(
     return [p for p in all_p if p.get("_layer") == name]
 
 
+def attach_settlements(
+    g: nx.Graph,
+    coords: Coords,
+    bundle: Any,
+    *,
+    layer_name: str = "settlement",
+    snap_tolerance_m: float = 2000.0,
+) -> dict[int, int]:
+    """Snap each settlement Point in ``bundle`` to a graph node.
+
+    Each settlement becomes an overlay on its nearest graph node,
+    so it travels along when the graph is re-embedded.
+
+    Args:
+        g: Base graph (sequential integer node labels).
+        coords: ``(N, 2)`` EPSG:4326 coordinate array.
+        bundle: Anything with a ``settlements`` GeoDataFrame
+            attribute — typically :class:`cartocrypt.aegina.LayerBundle`.
+        layer_name: Overlay layer identifier; default
+            ``"settlement"``.
+        snap_tolerance_m: Maximum snap distance; settlements
+            further than this flag ``_beyond_tolerance = True`` on
+            the overlay but are still attached.
+
+    Returns:
+        ``{positional_settlement_index → graph_node_index}``
+        mapping — rows are keyed by integer position (``iloc``), not
+        by the source GDF's potentially-MultiIndex label.  Indexing
+        the re-embedded coordinate array by the mapping's values
+        then gives warped settlement positions.
+    """
+    if getattr(bundle, "settlements", None) is None:
+        return {}
+    settlements = bundle.settlements
+    if settlements.empty:
+        return {}
+    add_layer(g, coords, settlements, layer_name,
+              snap_tolerance_m=snap_tolerance_m)
+    # Cache settlement centroids as (x, y) by positional index.
+    centroids: list[tuple[int, float, float]] = []
+    for pos, (_s_idx, s_row) in enumerate(settlements.iterrows()):
+        sg = s_row.geometry
+        if sg is None or sg.is_empty:
+            continue
+        c = sg.centroid
+        centroids.append((pos, float(c.x), float(c.y)))
+
+    mapping: dict[int, int] = {}
+    for n_id, data in g.nodes(data=True):
+        for ov in data.get("overlays", []):
+            if ov.get("_layer") != layer_name:
+                continue
+            src_xy = ov.get("_original_xy")
+            if src_xy is None:
+                continue
+            best_pos = None
+            best_d = np.inf
+            for pos, cx, cy in centroids:
+                d = (cx - src_xy[0]) ** 2 + (cy - src_xy[1]) ** 2
+                if d < best_d:
+                    best_d = d
+                    best_pos = pos
+            if best_pos is not None:
+                mapping[int(best_pos)] = int(n_id)
+    return mapping
+
+
+def polygons_as_gdf(
+    g: nx.Graph,
+    name: str | None = None,
+) -> gpd.GeoDataFrame:
+    """Return attached polygon overlays as a flat GeoDataFrame.
+
+    Splicing and viz code want a GeoDataFrame with real Shapely
+    geometry, not the raw ``_boundary`` coordinate lists stored
+    inside ``g.graph['overlay_polygons']``.  This helper rebuilds
+    the geometry and returns a GDF in EPSG:4326.
+
+    Args:
+        g: Graph with overlays attached.
+        name: Optional layer-name filter.
+
+    Returns:
+        GeoDataFrame with columns from the stored attribute dicts
+        plus a ``geometry`` column of Shapely Polygons.  Internal
+        bookkeeping fields that start with ``_`` are dropped
+        (except ``_layer``, which is renamed to ``layer``).
+    """
+    from shapely.geometry import Polygon
+
+    rows: list[dict[str, Any]] = []
+    geoms: list[Any] = []
+    for poly in g.graph.get("overlay_polygons", []):
+        if name is not None and poly.get("_layer") != name:
+            continue
+        boundary = poly.get("_boundary")
+        if not boundary:
+            continue
+        geom = Polygon(boundary)
+        if geom.is_empty:
+            continue
+        row = {
+            k: v for k, v in poly.items()
+            if not k.startswith("_") or k == "_layer"
+        }
+        if "_layer" in row:
+            row["layer"] = row.pop("_layer")
+        rows.append(row)
+        geoms.append(geom)
+
+    if not rows:
+        return gpd.GeoDataFrame({"geometry": []}, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    return gdf
+
+
 def summarise(g: nx.Graph) -> str:
     """Human-readable summary of all attached layers.
 
