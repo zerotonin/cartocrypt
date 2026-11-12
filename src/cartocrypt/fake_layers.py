@@ -293,71 +293,101 @@ def make_futurama_tubes(
 ) -> gpd.GeoDataFrame:
     """Generate a pneumatic tube-metro between Aegina's settlements.
 
-    The network is the Euclidean minimum spanning tree over
-    settlement centroids, plus ``n_shortcuts`` additional edges
-    chosen deterministically from the key to introduce loops so the
-    network isn't strictly a tree.
+    Thin wrapper around :func:`render_tubes_from_stations` that
+    pulls settlements from the ingested ``LayerBundle``.  See that
+    function for algorithm details.
+    """
+    if bundle.settlements is None or bundle.settlements.empty:
+        return _empty_tube_gdf()
+    to_m, _ = _local_projector(bundle.bbox)
+    return render_tubes_from_stations(
+        bundle.settlements, key,
+        n_shortcuts=n_shortcuts,
+        curvature=curvature,
+        n_bezier_samples=n_bezier_samples,
+        to_metres=to_m,
+    )
 
-    Each edge is drawn as a quadratic bézier curve with the control
-    point offset perpendicular to the straight segment by
-    ``curvature × segment_length``.  This gives the pneumatic-tube
-    "never straight" aesthetic.
+
+def render_tubes_from_stations(
+    stations: gpd.GeoDataFrame,
+    key: KeyBytes,
+    *,
+    n_shortcuts: int = 2,
+    curvature: float = 0.15,
+    n_bezier_samples: int = 32,
+    to_metres: Any = None,
+) -> gpd.GeoDataFrame:
+    """Build a Futurama-style tube network on an arbitrary station set.
+
+    Draws the Euclidean MST of the station centroids plus
+    ``n_shortcuts`` keyed non-MST edges, renders each edge as a
+    quadratic bézier with keyed perpendicular offset, and returns
+    the result as a GeoDataFrame.  The same ``key`` + ``stations``
+    always produces the same tubes — so the demo can render a
+    "real" network from ``bundle.settlements`` and a "phantom"
+    network from warped station positions with identical logical
+    connectivity and identical curves up to coordinate frame.
 
     Args:
-        bundle: Populated LayerBundle.
+        stations: GeoDataFrame with Point geometry.  Must carry a
+            ``name`` column (or row index is used as a fallback).
         key: 32-byte symmetric key.
-        n_shortcuts: Number of non-MST edges to add.
-        curvature: Perpendicular offset as a fraction of edge length.
-        n_bezier_samples: Points per curved segment.
+        n_shortcuts: Extra non-MST edges for loop-closing.
+        curvature: Perpendicular offset as a fraction of segment
+            length.
+        n_bezier_samples: Samples per curved segment.
+        to_metres: Optional callable mapping shapely geometry to a
+            metre-scale projection (e.g. the azimuthal-equidistant
+            transformer in :func:`_local_projector`).  If ``None``,
+            distances are measured directly in the input CRS units
+            (radians / degrees / projected metres — whatever the
+            stations are in).
 
     Returns:
-        GeoDataFrame with columns
-        ``line_name``, ``station_a``, ``station_b``, ``length_m``,
-        ``colour``, ``geometry``.
+        GeoDataFrame with ``line_name``, ``station_a``, ``station_b``,
+        ``length_m``, ``colour``, ``geometry`` columns.  CRS is
+        inherited from ``stations``.
     """
     rng = _keyed_rng(key, "futurama-tubes")
 
-    if bundle.settlements is None or bundle.settlements.empty:
-        return gpd.GeoDataFrame(
-            {"line_name": [], "station_a": [], "station_b": [],
-             "length_m": [], "colour": [], "geometry": []},
-            crs="EPSG:4326",
-        )
+    if stations is None or stations.empty:
+        return _empty_tube_gdf(crs=stations.crs if stations is not None else None)
 
-    # Station list: name + centroid
     names: list[str] = []
     xs: list[float] = []
     ys: list[float] = []
-    for i, row in bundle.settlements.iterrows():
-        g = row.geometry
-        if g is None or g.is_empty:
+    for i, row in stations.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
             continue
-        c = g.centroid
-        nm = str(row.get("name", f"Station-{i}")) if "name" in row.index else f"Station-{i}"
+        c = geom.centroid
+        nm = (str(row["name"]) if "name" in stations.columns
+              and row.get("name") is not None
+              else f"Station-{i}")
         names.append(nm)
         xs.append(c.x)
         ys.append(c.y)
     if len(names) < 2:
-        return gpd.GeoDataFrame(
-            {"line_name": [], "station_a": [], "station_b": [],
-             "length_m": [], "colour": [], "geometry": []},
-            crs="EPSG:4326",
-        )
+        return _empty_tube_gdf(crs=stations.crs)
 
     xs_a = np.asarray(xs)
     ys_a = np.asarray(ys)
     n = len(names)
 
-    # Complete graph of Euclidean distances (deg, scaled to metres
-    # for display using a rough deg→m factor)
-    to_m, _ = _local_projector(bundle.bbox)
-    stations_m = np.array(
-        [to_m(Point(x, y)).coords[0] for x, y in zip(xs, ys, strict=True)]
-    )
+    # Distances: if a projector is supplied, compute in metres;
+    # else use the raw input-CRS Euclidean distance.
+    if to_metres is not None:
+        stations_m = np.array(
+            [to_metres(Point(x, y)).coords[0]
+             for x, y in zip(xs, ys, strict=True)]
+        )
+    else:
+        stations_m = np.column_stack([xs_a, ys_a])
 
     g = nx.Graph()
     for i in range(n):
-        g.add_node(i, name=names[i], xy_deg=(xs_a[i], ys_a[i]))
+        g.add_node(i, name=names[i], xy=(xs_a[i], ys_a[i]))
     for i in range(n):
         for j in range(i + 1, n):
             d = float(np.linalg.norm(stations_m[i] - stations_m[j]))
@@ -365,12 +395,9 @@ def make_futurama_tubes(
 
     mst = nx.minimum_spanning_tree(g, weight="weight")
 
-    # Seeded shortcut edges: random non-MST edges biased towards
-    # medium-length (to avoid crossing the whole island every time).
     non_mst = [(u, v) for u, v in g.edges if not mst.has_edge(u, v)]
     if non_mst and n_shortcuts > 0:
         weights = np.array([g[u][v]["weight"] for u, v in non_mst])
-        # Prefer 1st–3rd quartile edges
         median = np.median(weights)
         prefs = 1.0 / (1.0 + np.abs(weights - median) / max(median, 1.0))
         prefs = prefs / prefs.sum()
@@ -380,7 +407,6 @@ def make_futurama_tubes(
             u, v = non_mst[k]
             mst.add_edge(u, v, weight=g[u][v]["weight"])
 
-    # Assign each edge to a "line" (colour) by a greedy chain walk
     line_assign = _assign_lines(mst, rng)
 
     rows: list[dict[str, Any]] = []
@@ -398,7 +424,15 @@ def make_futurama_tubes(
             "geometry": LineString(curve),
         })
 
-    return gpd.GeoDataFrame(rows, crs="EPSG:4326")
+    return gpd.GeoDataFrame(rows, crs=stations.crs)
+
+
+def _empty_tube_gdf(crs: Any = "EPSG:4326") -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(
+        {"line_name": [], "station_a": [], "station_b": [],
+         "length_m": [], "colour": [], "geometry": []},
+        crs=crs,
+    )
 
 
 # ┌────────────────────────────────────────────────────────────┐
